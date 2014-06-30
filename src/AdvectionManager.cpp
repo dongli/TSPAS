@@ -29,7 +29,7 @@ void AdvectionManager::init(const Domain &domain, const Mesh &mesh,
             boost::lexical_cast<string>(mesh.getNumGrid(1, FULL));
     }
     outputFileIdx = io.registerOutputFile(mesh, output_prefix,
-                                          IOFrequencyUnit::STEPS, 1);
+                                          IOFrequencyUnit::STEPS, 10);
 
     Qstar.create("qstar", "N/A", "intermediate tracer density", mesh, CENTER);
     FX.create("fx", "N/A", "flux along x direction", mesh, X_FACE);
@@ -40,23 +40,27 @@ void AdvectionManager::init(const Domain &domain, const Mesh &mesh,
     
     io.file(outputFileIdx).registerOutputField<double, 1, FULL_DIMENSION>(1, &volume);
 
+    int js = 0, jn = mesh.getNumGrid(1, FULL)-1;
+
     for (int i = 0; i < mesh.getTotalNumGrid(CENTER); ++i) {
         volume(i) = mesh.getCellVolume(i);
     }
 
     dlon.resize(mesh.getNumGrid(0, HALF));
     for (int i = 0; i < mesh.getNumGrid(0, HALF); ++i) {
-        dlon[i] = mesh.getGridInterval(0, HALF, i);
+        dlon[i] = mesh.getGridInterval(0, FULL, i); // this is correct
     }
     dlat.resize(mesh.getNumGrid(1, HALF));
     for (int j = 0; j < mesh.getNumGrid(1, HALF); ++j) {
-        dlat[j] = mesh.getGridInterval(1, HALF, j);
+        dlat[j] = mesh.getGridInterval(1, FULL, j); // this is correct
     }
-    cosLatFull.resize(mesh.getNumGrid(1, FULL));
+    cosLatFull.set_size(mesh.getNumGrid(1, FULL));
     for (int j = 0; j < mesh.getNumGrid(1, FULL); ++j) {
         cosLatFull[j] = mesh.getCosLat(FULL, j);
     }
-    cosLatHalf.resize(mesh.getNumGrid(1, HALF));
+    cosLatFull[js] = 0;
+    cosLatFull[jn] = 0;
+    cosLatHalf.set_size(mesh.getNumGrid(1, HALF));
     for (int j = 0; j < mesh.getNumGrid(1, HALF); ++j) {
         cosLatHalf[j] = mesh.getCosLat(HALF, j);
     }
@@ -64,31 +68,24 @@ void AdvectionManager::init(const Domain &domain, const Mesh &mesh,
 
 void AdvectionManager::registerTracer(const string &name, const string &units,
                                       const string &brief) {
-    Q.push_back(new Field);
-    Field *q = Q.back();
+    Q.push_back(new ScalarField);
+    ScalarField *q = Q.back();
     q->create(name, units, brief, *mesh, CENTER);
-    io.file(outputFileIdx).registerOutputField<double, 2, FULL_DIMENSION>(1, q);
 }
 
-void AdvectionManager::input(const TimeLevelIndex<2> &timeIdx,
-                             vector<Field*> &q0) {
+void AdvectionManager::input(const TimeLevelIndex<2> &timeIdx, double *q) {
+    int l = 0;
     for (int s = 0; s < Q.size(); ++s) {
-        Field &q = *Q[s];
-        for (int j = 0; j < mesh->getNumGrid(1, FULL); ++j) {
-            for (int i = 0; i < mesh->getNumGrid(0, FULL); ++i) {
-                q(timeIdx, i, j) = (*q0[s])(timeIdx, i, j);
-            }
+        for (int i = 0; i < mesh->getTotalNumGrid(CENTER); ++i) {
+            (*Q[s])(timeIdx, i) = q[l];
+            l++;
         }
-        q.applyBndCond(timeIdx);
+        Q[s]->applyBndCond(timeIdx);
     }
 }
 
-void AdvectionManager::output(const TimeLevelIndex<2> &timeIdx) {
-    io.create(outputFileIdx);
-    for (int s = 0; s < Q.size(); ++s) {
-        io.output<double, 2>(outputFileIdx, timeIdx, 1, Q[s]);
-    }
-    io.close(outputFileIdx);
+void AdvectionManager::output(const TimeLevelIndex<2> &timeIdx, int ncId) {
+    REPORT_ERROR("The output should be done already!");
 }
 
 void AdvectionManager::diagnose(const TimeLevelIndex<2> &timeIdx) {
@@ -108,15 +105,19 @@ void AdvectionManager::advance(double dt, const TimeLevelIndex<2> &newTimeIdx,
     TimeLevelIndex<2> oldTimeIdx = newTimeIdx-1;
     TimeLevelIndex<2> halfTimeIdx = newTimeIdx-0.5;
     const double eps = 1.0e-80;
+    const double R = domain->getRadius();
     for (int s = 0; s < Q.size(); ++s) {
-        Field &q = *Q[s];
+        ScalarField &q = *Q[s];
         double dQ;
         int J;
+//#define ONLY_LAX_WENDROFF
+//#define ONLY_UPWIND
+#ifndef ONLY_UPWIND
         // ---------------------------------------------------------------------
         // Lax-Wendroff pass
         for (int j = 1; j < mesh->getNumGrid(1, FULL)-1; ++j) {
             for (int i = 0; i < mesh->getNumGrid(0, HALF); ++i) {
-                double f1 = dt/dlon[i];
+                double f1 = dt/(R*dlon[i]);
                 double f2 = f1/cosLatFull[j];
                 double u = velocity(0)(halfTimeIdx, i, j);
                 double q1 = q(oldTimeIdx, i,   j);
@@ -127,7 +128,7 @@ void AdvectionManager::advance(double dt, const TimeLevelIndex<2> &newTimeIdx,
         FX.applyBndCond();
         for (int j = 0; j < mesh->getNumGrid(1, HALF); ++j) {
             for (int i = 0; i < mesh->getNumGrid(0, FULL); ++i) {
-                double f1 = dt/dlat[j];
+                double f1 = dt/(R*dlat[j]);
                 double f2 = f1/cosLatHalf[j];
                 double v = velocity(1)(halfTimeIdx, i, j)*cosLatHalf[j];
                 double q1 = q(oldTimeIdx, i, j  );
@@ -136,14 +137,16 @@ void AdvectionManager::advance(double dt, const TimeLevelIndex<2> &newTimeIdx,
             }
         }
         FY.applyBndCond();
+#endif
+#if (!defined ONLY_LAX_WENDROFF && !defined ONLY_UPWIND)
         // ---------------------------------------------------------------------
         // calculate intermediate Qstar
         for (int j = 1; j < mesh->getNumGrid(1, FULL)-1; ++j) {
             for (int i = 0; i < mesh->getNumGrid(0, FULL); ++i) {
-                double fx1 = dt/dlon[i]; // TODO: Should we support irregular lon grids?
-                double fx2 = dt/dlon[i];
-                double fy1 = dt/dlat[j-1];
-                double fy2 = dt/dlat[j  ];
+                double fx1 = dt/(R*dlon[i]*cosLatFull[i]); // TODO: Should we support irregular lon grids?
+                double fx2 = dt/(R*dlon[i]*cosLatFull[i]);
+                double fy1 = dt/(R*dlat[j-1]*cosLatHalf[j-1]);
+                double fy2 = dt/(R*dlat[j  ]*cosLatHalf[j  ]);
                 double u1 = velocity(0)(halfTimeIdx, i-1, j);
                 double u2 = velocity(0)(halfTimeIdx, i,   j);
                 double v1 = velocity(1)(halfTimeIdx, i, j-1);
@@ -183,7 +186,7 @@ void AdvectionManager::advance(double dt, const TimeLevelIndex<2> &newTimeIdx,
         }
         // ---------------------------------------------------------------------
         // shape-preserving rule (A <= 0 is good)
-        for (int j = 1; j < mesh->getNumGrid(1, FULL)-1; ++j) {
+        for (int j = 0; j < mesh->getNumGrid(1, FULL); ++j) {
             for (int i = 0; i < mesh->getNumGrid(0, FULL); ++i) {
                 double Qmin =  1.0e+15;
                 double Qmax = -1.0e+15;
@@ -205,16 +208,22 @@ void AdvectionManager::advance(double dt, const TimeLevelIndex<2> &newTimeIdx,
             }
         }
         A.applyBndCond();
+#endif
+#ifndef ONLY_LAX_WENDROFF
         // ---------------------------------------------------------------------
         // upwind pass
         for (int j = 1; j < mesh->getNumGrid(1, FULL)-1; ++j) {
             for (int i = 0; i < mesh->getNumGrid(0, HALF); ++i) {
-                double tmp1 = (fabs(A(i-1, j))+A(i-1, j))/(fabs(A(i-1, j))+eps);
-                double tmp2 = (fabs(A(i,   j))+A(i,   j))/(fabs(A(i,   j))+eps);
-                double tmp3 = (fabs(A(i-1, j))+A(i-1, j))*(fabs(A(i, j))+A(i, j));
-                double tmp4 = fabs(A(i-1, j))*fabs(A(i, j))+eps;
+#ifndef ONLY_UPWIND
+                double tmp1 = (fabs(A(i,   j))+A(i,   j))/(fabs(A(i,   j))+eps);
+                double tmp2 = (fabs(A(i+1, j))+A(i+1, j))/(fabs(A(i+1, j))+eps);
+                double tmp3 = (fabs(A(i+1, j))+A(i+1, j))*(fabs(A(i, j))+A(i, j));
+                double tmp4 = fabs(A(i, j))*fabs(A(i+1, j))+eps;
                 double cxstar = 0.5*(tmp1+tmp2)-0.25*tmp3/tmp4;
-                double f = dt/dlon[i];
+#else
+                double cxstar = 1;
+#endif
+                double f = dt/(R*dlon[i]);
                 double u = velocity(0)(halfTimeIdx, i, j);
                 double q1 = q(oldTimeIdx, i,   j);
                 double q2 = q(oldTimeIdx, i+1, j);
@@ -225,12 +234,16 @@ void AdvectionManager::advance(double dt, const TimeLevelIndex<2> &newTimeIdx,
         FX.applyBndCond();
         for (int j = 0; j < mesh->getNumGrid(1, HALF); ++j) {
             for (int i = 0; i < mesh->getNumGrid(0, FULL); ++i) {
+#ifndef ONLY_UPWIND
                 double tmp1 = (fabs(A(i, j  ))+A(i, j  ))/(fabs(A(i, j  ))+eps);
                 double tmp2 = (fabs(A(i, j+1))+A(i, j+1))/(fabs(A(i, j+1))+eps);
                 double tmp3 = (fabs(A(i, j+1))+A(i, j+1))*(fabs(A(i, j))+A(i, j));
                 double tmp4 = fabs(A(i, j))*fabs(A(i, j+1))+eps;
                 double cystar = 0.5*(tmp1+tmp2)-0.25*tmp3/tmp4;
-                double f = dt/dlat[j];
+#else
+                double cystar = 1;
+#endif
+                double f = dt/(R*dlat[j]);
                 double v = velocity(1)(halfTimeIdx, i, j)*cosLatHalf[j];
                 double q1 = q(oldTimeIdx, i, j  );
                 double q2 = q(oldTimeIdx, i, j+1);
@@ -239,6 +252,7 @@ void AdvectionManager::advance(double dt, const TimeLevelIndex<2> &newTimeIdx,
             }
         }
         FY.applyBndCond();
+#endif
         // ---------------------------------------------------------------------
         // calculate final Q
         for (int j = 1; j < mesh->getNumGrid(1, FULL)-1; ++j) {

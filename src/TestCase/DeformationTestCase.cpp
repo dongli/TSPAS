@@ -4,7 +4,7 @@ namespace tspas {
 
 DeformationTestCase::DeformationTestCase() {
     subcase = "case4";
-    period = 5.0;
+    period = 5;
     REPORT_ONLINE;
 }
 
@@ -15,13 +15,10 @@ DeformationTestCase::~DeformationTestCase() {
 }
 
 void DeformationTestCase::init(const ConfigManager &configManager,
-                               const TimeManager &timeManager) {
-    AdvectionTestCase::init(configManager, timeManager);
-    // -------------------------------------------------------------------------
+                               TimeManager &timeManager) {
     // initialize domain
     domain = new geomtk::SphereDomain(2);
-    domain->setRadius(1.0);
-    // -------------------------------------------------------------------------
+    domain->setRadius(1);
     // initialize mesh
     mesh = new geomtk::RLLMesh(*domain);
     int numLon = 240, numLat = 121;
@@ -32,9 +29,10 @@ void DeformationTestCase::init(const ConfigManager &configManager,
         configManager.getValue("test_case", "num_lat", numLat);
     }
     mesh->init(numLon, numLat);
-    // -------------------------------------------------------------------------
     // initialize velocity
     velocity.create(*mesh, true, HAS_HALF_LEVEL);
+
+    AdvectionTestCase::init(configManager, timeManager);
 }
 
 Time DeformationTestCase::getStartTime() const {
@@ -48,7 +46,7 @@ Time DeformationTestCase::getEndTime() const {
 }
 
 double DeformationTestCase::getStepSize() const {
-    return period/600.0;
+    return period/1200.0;
 }
 
 void DeformationTestCase::advance(double time,
@@ -132,52 +130,44 @@ void DeformationTestCase::advance(double time,
 }
 
 void DeformationTestCase::calcInitCond(AdvectionManager &advectionManager) {
-    Field *q0; // reference tracer
-    Field *q1; // cosine hills tracer
-    Field *q2; // tracer correlated to q1
-    Field *q3; // slotted cylinders tracer
-    Field *q4; // Gaussian hills tracer
-    TimeLevelIndex<2> timeIdx;
-    double hmax, r, g, a, b, c;
+    advectionManager.registerTracer("q0", "N/A", "background tracer");
+    advectionManager.registerTracer("q1", "N/A", "cosine hills tracer");
+    advectionManager.registerTracer("q2", "N/A", "q1 correlated tracer");
+    advectionManager.registerTracer("q3", "N/A", "slotted cylinders tracer");
+    advectionManager.registerTracer("q4", "N/A", "Gaussian hills tracer");
+    densities = &advectionManager.getDensities();
+    AdvectionTestCase::registerDefaultOutput();
     SpaceCoord x(2), c0(2), c1(2);
     c0.setCoord(M_PI*5.0/6.0, 0.0); c0.transformToCart(*domain);
     c1.setCoord(M_PI*7.0/6.0, 0.0); c1.transformToCart(*domain);
-    // -------------------------------------------------------------------------
-    // reference tracer
-    q.push_back(new Field); q0 = q.back();
-    q0->create("", "", "", *mesh, CENTER);
+    double hmax, r, g, a, b, c;
+    double q[5*mesh->getTotalNumGrid(CENTER)];
+    int l = 0;
+    // background tracer
     for (int i = 0; i < mesh->getTotalNumGrid(CENTER); ++i) {
-        (*q0)(timeIdx, i) = 1.0;
+        q[l++] = 1.0;
     }
-    // -------------------------------------------------------------------------
     // cosine hills tracer
-    q.push_back(new Field); q1 = q.back();
-    q1->create("", "", "", *mesh, CENTER);
     hmax = 1, r = domain->getRadius()*0.5, g = 0.1, c = 0.9;
     for (int i = 0; i < mesh->getTotalNumGrid(CENTER); ++i) {
         mesh->getGridCoord(i, CENTER, x);
         double r0 = domain->calcDistance(x, c0);
         double r1 = domain->calcDistance(x, c1);
         if (r0 < r) {
-            (*q1)(timeIdx, i) = g+c*hmax*0.5*(1+cos(M_PI*r0/r));
+            q[l++] = g+c*hmax*0.5*(1+cos(M_PI*r0/r));
         } else if (r1 < r) {
-            (*q1)(timeIdx, i) = g+c*hmax*0.5*(1+cos(M_PI*r1/r));
+            q[l++] = g+c*hmax*0.5*(1+cos(M_PI*r1/r));
         } else {
-            (*q1)(timeIdx, i) = g;
+            q[l++] = g;
         }
     }
-    // -------------------------------------------------------------------------
     // tracer correlated to cosine hills tracer
-    q.push_back(new Field); q2 = q.back();
-    q2->create("", "", "", *mesh, CENTER);
     a = -0.8, b = 0.9;
     for (int i = 0; i < mesh->getTotalNumGrid(CENTER); ++i) {
-        (*q2)(timeIdx, i) = a*pow((*q1)(timeIdx, i), 2)+b;
+        q[l] = a*pow(q[l-mesh->getTotalNumGrid(CENTER)], 2)+b;
+        l++;
     }
-    // -------------------------------------------------------------------------
     // slotted cylinders tracer
-    q.push_back(new Field); q3 = q.back();
-    q3->create("", "", "", *mesh, CENTER);
     b = 0.1, c = 1.0, r = 0.5;
     for (int i = 0; i < mesh->getTotalNumGrid(CENTER); ++i) {
         mesh->getGridCoord(i, CENTER, x);
@@ -185,30 +175,28 @@ void DeformationTestCase::calcInitCond(AdvectionManager &advectionManager) {
         double r1 = domain->calcDistance(x, c1);
         if ((r0 <= r && fabs(x(0)-c0(0)) >= r/6.0) ||
             (r1 <= r && fabs(x(0)-c1(0)) >= r/6.0))
-            (*q3)(timeIdx, i) = c;
+            q[l++] = c;
         else if (r0 <= r && fabs(x(0)-c0(0)) < r/6.0 &&
                  x(1)-c0(1) < -5.0/12.0*r)
-            (*q3)(timeIdx, i) = c;
+            q[l++] = c;
         else if (r1 <= r && fabs(x(0)-c1(0)) < r/6.0 &&
                  x(1)-c1(1) > 5.0/12.0*r)
-            (*q3)(timeIdx, i) = c;
+            q[l++] = c;
         else
-            (*q3)(timeIdx, i) = b;
+            q[l++] = b;
     }
-    // -------------------------------------------------------------------------
     // Gaussian hills tracer
-    q.push_back(new Field); q4 = q.back();
-    q4->create("", "", "", *mesh, CENTER);
     hmax = 0.95, b = 5.0;
     for (int i = 0; i < mesh->getTotalNumGrid(CENTER); ++i) {
         mesh->getGridCoord(i, CENTER, x);
         x.transformToCart(*domain);
         vec d0 = x.getCartCoord()-c0.getCartCoord();
         vec d1 = x.getCartCoord()-c1.getCartCoord();
-        (*q4)(timeIdx, i) = hmax*(exp(-b*dot(d0, d0))+exp(-b*dot(d1, d1)));
+        q[l++] = hmax*(exp(-b*dot(d0, d0))+exp(-b*dot(d1, d1)));
     }
-    // -------------------------------------------------------------------------
-    AdvectionTestCase::calcInitCond(advectionManager);
+    // propagate initial conditions to advection manager
+    TimeLevelIndex<2> timeIdx;
+    advectionManager.input(timeIdx, q);
 }
 
 }

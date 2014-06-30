@@ -12,10 +12,10 @@ protected:
     IOManager io;
     int outputFileIdx;
     
-    vector<Field*> Q;
-    SingleLevelField Qstar;
-    SingleLevelField FX, FY, A, B;
-    SingleLevelField volume;
+    vector<ScalarField*> Q;
+    SingleScalarField Qstar;
+    SingleScalarField FX, FY, A, B;
+    SingleScalarField volume;
 
     vec dlon, dlat;
     vec cosLatFull, cosLatHalf;
@@ -30,9 +30,11 @@ public:
     void registerTracer(const string &name, const string &units,
                         const string &brief);
 
-    void input(const TimeLevelIndex<2> &timeIdx, vector<Field*> &q);
+    vector<ScalarField*>& getDensities() { return Q; }
 
-    void output(const TimeLevelIndex<2> &newTimeIdx);
+    void input(const TimeLevelIndex<2> &timeIdx, double *q);
+
+    void output(const TimeLevelIndex<2> &newTimeIdx, int ncId);
 
     void diagnose(const TimeLevelIndex<2> &timeIdx);
 

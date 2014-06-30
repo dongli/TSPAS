@@ -4,20 +4,25 @@ load "$NCARG_ROOT/lib/ncarg/nclscripts/csm/contributed.ncl"
 
 begin
 
-    test_case = "rotation"
-    ic = ""
-    resolution = "240x121"
+    root = "../build/Release"
+    test_case = "deform.case4"
+    ic = "ch"
+    resolution = "240x120"
     time_stamp = "%5.5d"
-    run_type = "Debug"
-    start_time = 0
-    end_time = 15
+    start_time = 1200
+    end_time = 1200
     time_step = 1
+
+    ; min_lon = 120.0
+    ; max_lon = 240.0
+    ; min_lat = 10.0
+    ; max_lat = 80.0
 
     file_prefix = "tspas."+test_case+"."+resolution
 
     fs = systemfunc("for (( i = "+start_time+"; i <= "+end_time+"; "+ \
         "i = i+"+time_step+" )); "+ \
-        "do printf '../build/"+run_type+"/"+file_prefix+"."+time_stamp+".nc\n' $i; done")
+        "do printf '"+root+"/"+file_prefix+"."+time_stamp+".nc\n' $i; done")
 
     num_time = dimsizes(fs)
 
@@ -27,9 +32,22 @@ begin
         wks = gsn_open_wks("pdf", file_prefix+".cells")
     end if
 
-    if (isStrSubset(test_case, "rotation") .or. \\
-        isStrSubset(test_case, "barotropic")) then
+    if (isStrSubset(test_case, "rotation")) then
         gsn_define_colormap(wks, "WhBlGrYeRe")
+    end if
+    if (isStrSubset(test_case, "barotropic")) then
+        if (ic .eq. "gd") then
+            gsn_define_colormap(wks, "GMT_panoply")
+        end if
+        if (ic .eq. "step") then
+            cmap = (/(/1.0, 1.0, 1.0 /),(/0.0, 0.0, 0.0 /), \
+                     (/0.84,0.84,1.0 /),(/0.38,0.4, 0.98/), \
+                     (/0.04,0.15,0.89/),(/0.06,0.4, 0.46/), \
+                     (/0.15,0.71,0.14/),(/0.54,0.85,0.17/), \
+                     (/0.98,0.98,0.22/),(/0.99,0.53,0.14/), \
+                     (/0.99,0.09,0.11/)/)
+            gsn_define_colormap(wks, cmap)
+        end if
     end if
     if (isStrSubset(test_case, "deform")) then
         if (ic .eq. "ch" .or. ic .eq. "sc") then
@@ -47,14 +65,24 @@ begin
     end if
 
     res = True
+    res@gsnFrame = False
     res@cnLinesOn = False
     res@cnFillOn = True
     res@gsnSpreadColors = True
     res@cnLevelSelectionMode = "ManualLevels"
     if (test_case .eq. "barotropic") then
-        res@cnMinLevelValF = 75000
-        res@cnMaxLevelValF = 85000
-        res@cnLevelSpacingF = 500.0
+        if (ic .eq. "step") then
+            res@cnMinLevelValF = 0.2
+            res@cnMaxLevelValF = 0.9
+            res@cnLevelSpacingF = 0.1
+        else if (ic .eq. "gd") then
+            ; res@cnMinLevelValF = 102000.0
+            ; res@cnMaxLevelValF = 124000.0
+            res@cnMinLevelValF = 61000
+            res@cnMaxLevelValF = 86000
+            res@cnLevelSpacingF = (res@cnMaxLevelValF-res@cnMinLevelValF)/20.0
+        end if
+        end if
     end if
     if (isStrSubset(test_case, "rotation")) then
         res@cnMinLevelValF = 0.0
@@ -78,39 +106,54 @@ begin
             res@cnLevelSpacingF = 0.1
         end if
     end if
-    res@mpCenterLonF = 180.0
     res@mpOutlineOn = False
-    res@pmTickMarkDisplayMode = "Always"
     res@lbBoxMinorExtentF = 0.2
-    res@gsnPolar = "NH"
-    res@mpMinLatF = 40.0
+    res@pmTickMarkDisplayMode = "Always"
+    if (.not. isdefined("min_lon")) then
+        res@mpCenterLonF = 180.0
+    else
+        res@mpCenterLonF = (min_lon+max_lon)*0.5
+        res@mpLimitMode = "LatLon"
+        res@mpMinLonF = min_lon
+        res@mpMaxLonF = max_lon
+        res@mpMinLatF = min_lat
+        res@mpMaxLatF = max_lat
+    end if
 
     do l = 0, num_time-1
         system("echo file: "+fs(l))
         f = addfile(fs(l), "r")
         num_lat = dimsizes(f->lat)
         if (isStrSubset(test_case, "barotropic")) then
-            q = f->q1
+            if (ic .eq. "step") then
+                q = f->q2/f->q0
+            end if
+            if (ic .eq. "gd") then
+                q = f->q1
+            end if
         end if
         if (isStrSubset(test_case, "rotation")) then
-            q = f->q1(0,:,:)/f->q0(0,:,:)
+            q = f->q1/f->q0
         end if
         if (isStrSubset(test_case, "deform")) then
             if (ic .eq. "ch") then
-                q = f->q1(0,:,:)/f->q0(0,:,:)
+                q = f->q1/f->q0
             end if
             if (ic .eq. "sc") then
-                q = f->q3(0,:,:)/f->q0(0,:,:)
+                q = f->q3/f->q0
             end if
             if (ic .eq. "gh") then
-                q = f->q4(0,:,:)/f->q0(0,:,:)
+                q = f->q4/f->q0
             end if
         end if
-        copy_VarCoords(f->q0(0,:,:), q)
+        copy_VarCoords(f->q0, q)
         res@gsnLeftString = ""
-        res@gsnRightString = "Min:"+sprintf("%8.5f", min(q))+" "+ \
-                             "Max:"+sprintf("%8.5f", max(q))
-        plot = gsn_csm_contour_map(wks, q, res)
+        res@gsnRightString = ""
+        ; res@gsnRightString = "Min:"+sprintf("%8.5f", min(q))+" "+ \
+        ;                      "Max:"+sprintf("%8.5f", max(q))
+        plot = gsn_csm_contour_map(wks, q(0,:,:), res)
+
+        frame(wks)
     end do
 
 end
